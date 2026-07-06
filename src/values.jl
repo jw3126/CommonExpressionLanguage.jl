@@ -52,6 +52,57 @@ Base.:(==)(a::CelTimestamp, b::CelTimestamp) = a.seconds == b.seconds && a.nanos
 Base.hash(a::CelTimestamp, h::UInt) = hash((a.seconds, a.nanos), hash(:CelTimestamp, h))
 
 """
+CEL map value. A plain Julia dict cannot implement CEL key semantics:
+`isequal(true, 1)` is true in Julia, but CEL bool keys are distinct from
+numeric keys, while int/uint/double keys that are numerically equal are the
+SAME key (`{1: 'a'}[1.0] == 'a'`). CelMap stores a normalized
+`(class, value)` key internally and keeps the original key for iteration.
+"""
+struct CelMap <: AbstractDict{Any,Any}
+    data::OrderedDict{Any,Pair{Any,Any}}   # normkey => (original key => value)
+    CelMap() = new(OrderedDict{Any,Pair{Any,Any}}())
+end
+function CelMap(pairs)
+    m = CelMap()
+    for (k, v) in pairs
+        m[k] = v
+    end
+    return m
+end
+
+"Normalized map key: a class byte keeps bool/numeric/string keys apart."
+function normkey(k)
+    k isa Bool && return (0x02, k)
+    k isa Int64 && return (0x01, k)
+    k isa UInt64 && return (0x01, k <= UInt64(typemax(Int64)) ? Int64(k) : k)
+    if k isa Float64
+        (isinteger(k) && typemin(Int64) <= k <= typemax(Int64)) && return (0x01, Int64(k))
+        return (0x01, k)
+    end
+    k isa String && return (0x03, k)
+    return (0x00, k)
+end
+
+Base.length(m::CelMap) = length(m.data)
+function Base.iterate(m::CelMap, state...)
+    it = iterate(m.data, state...)
+    it === nothing && return nothing
+    (_, kv), st = it
+    return (kv, st)
+end
+Base.haskey(m::CelMap, k) = haskey(m.data, normkey(k))
+function Base.get(m::CelMap, k, default)
+    kv = get(m.data, normkey(k), nothing)
+    return kv === nothing ? default : kv.second
+end
+function Base.getindex(m::CelMap, k)
+    kv = get(m.data, normkey(k), nothing)
+    kv === nothing && throw(KeyError(k))
+    return kv.second
+end
+Base.setindex!(m::CelMap, v, k) = (m.data[normkey(k)] = (k => v); m)
+
+"""
 First-class CEL type value, e.g. the result of `type(1)`.
 
 `name` is the canonical runtime type name (`"int"`, `"list"`, `"map"`,

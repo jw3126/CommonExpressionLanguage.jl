@@ -66,3 +66,16 @@ const STDLIB = Dict{String,Any}(
     "getSeconds" => cel_get_seconds,
     "getMilliseconds" => cel_get_milliseconds,
 )
+
+# Make every standard function TOTAL: any unmatched signature — including a
+# wrong arity like size(1, 2) — returns a no_overload error value instead of
+# throwing MethodError. (Skip functions that already have a Vararg catch-all,
+# e.g. the timestamp accessors.)
+for (name, f) in STDLIB
+    hasmethod(f, Tuple{Vararg{Any}}) && continue
+    @eval (::typeof($f))(args...) = no_overload($name, args...)
+end
+
+# Explicit totality registry: the transpiler emits direct calls (no MethodError
+# guard) only for functions known to be total.
+const TOTAL_FNS = Set{Any}(values(STDLIB))

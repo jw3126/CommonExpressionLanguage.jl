@@ -85,5 +85,7 @@ CI against both backends (`test/conformance.jl`). Current gaps:
   defines the hook interface). These tests are auto-skipped and counted.
 - **CEL extensions**: `optionals`, `bindings_ext`, `block_ext`, `math_ext`,
   `string_ext`, `encoders_ext` are not implemented.
-- `matches()` uses Julia's PCRE2 rather than RE2; the RE2 syntax used in
-  practice is a near-subset, and all conformance regex tests pass.
+- `matches()` uses Julia's PCRE2 rather than RE2. PCRE-only constructs that
+  RE2 rejects (lookarounds, backreferences, atomic groups) are detected and
+  rejected, and compiled patterns are cached; exotic syntax differences
+  beyond that may remain. All conformance regex tests pass.

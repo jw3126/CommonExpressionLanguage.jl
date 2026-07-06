@@ -91,10 +91,12 @@ function resolve_expr(ctx::TranspileCtx, parts::Vector{String})
         return ex
     end
     cands = name_candidates(ctx.env.container, parts)
-    # transpile-time varmap resolution (longest candidate wins, like runtime)
+    # transpile-time varmap resolution (longest candidate wins, like runtime);
+    # to_cel canonicalizes Julia values (Int32 -> Int64, dicts -> CelMap, ...)
+    # so both backends see identical CEL values
     for (qname, k) in cands
         haskey(ctx.varmap, qname) || continue
-        ex = ctx.varmap[qname]
+        ex = Expr(:call, _ref(:to_cel), ctx.varmap[qname])
         for i in k+1:length(parts)
             ex = Expr(:call, _ref(:cel_select), ex, parts[i])
         end
@@ -173,21 +175,28 @@ function tnode(ctx::TranspileCtx, e::CallExpr)
         end)
     end
 
-    # namespaced global call spelled as receiver call
+    # receiver-style call: variables shadow qualified global functions, same
+    # precedence as the checker and the closure backend (see
+    # qualified_fn_candidate / target_is_variable in compile.jl)
     if e.target !== nothing
-        tpath = select_path(e.target)
-        if tpath !== nothing && !haskey(ctx.locals, tpath[1])
-            for (qname, k) in name_candidates(ctx.env.container, [tpath; fname])
-                k == length(tpath) + 1 || continue
-                if haskey(ctx.env.functions, qname)
-                    return strict_call_expr(ctx, qname, ctx.env.functions[qname], e.args)
-                end
-            end
-        end
         f = get(ctx.env.functions, fname, nothing)
-        f === nothing && return Expr(:call, _ref(:CelError), QuoteNode(:unknown_function),
-            "unknown function '$(fname)'")
-        return strict_call_expr(ctx, fname, f, CelExpr[e.target; e.args])
+        recv_ex = if f === nothing
+            Expr(:call, _ref(:CelError), QuoteNode(:unknown_function), "unknown function '$(fname)'")
+        else
+            strict_call_expr(ctx, fname, f, CelExpr[e.target; e.args])
+        end
+        tpath = select_path(e.target)
+        (tpath === nothing || haskey(ctx.locals, tpath[1])) && return recv_ex
+        qfname = qualified_fn_candidate(ctx.env.functions, ctx.env.container, tpath, fname)
+        qfname === nothing && return recv_ex
+        varcands = name_candidates(ctx.env.container, tpath)
+        # varmap bindings are known at transpile time and shadow statically
+        target_is_variable(qn -> haskey(ctx.varmap, qn), varcands) && return recv_ex
+        glob_ex = strict_call_expr(ctx, qfname, ctx.env.functions[qfname], e.args)
+        ctx.varsdict === nothing && return glob_ex
+        cands3 = Tuple((qn, Symbol(qn), k) for (qn, k) in varcands)
+        return Expr(:if, Expr(:call, _ref(:_has_binding), ctx.varsdict, cands3),
+            recv_ex, glob_ex)
     end
 
     absolute = startswith(fname, ".")
@@ -214,9 +223,9 @@ end
 "Strict call: let-bind arguments left to right, first error short-circuits."
 function strict_call_expr(ctx::TranspileCtx, fname::String, f, argexprs::Vector{CelExpr})
     syms = [gensym("a$i") for i in eachindex(argexprs)]
-    # stdlib functions have no_overload fallback methods and never throw
-    # MethodError; user functions go through call_fn
-    core = if f isa Function && parentmodule(f) === CELMOD
+    # standard functions are registered total (see TOTAL_FNS) and never throw
+    # MethodError, so they get direct calls; other functions go through call_fn
+    core = if f in TOTAL_FNS
         Expr(:call, fun_ref(f), syms...)
     else
         Expr(:call, _ref(:call_fn), fun_ref(f), fname, syms...)

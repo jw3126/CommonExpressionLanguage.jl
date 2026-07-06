@@ -96,7 +96,8 @@ end
 
 cel_to_duration(x::CelDuration) = x
 function cel_to_duration(x::Int64)
-    abs(x) <= DUR_MAX_SECONDS || return ERR_DUR_RANGE
+    # no abs(): abs(typemin(Int64)) overflows and would pass the check
+    -DUR_MAX_SECONDS <= x <= DUR_MAX_SECONDS || return ERR_DUR_RANGE
     return CelDuration(x, Int32(0))
 end
 cel_to_duration(x) = no_overload("duration", x)
@@ -115,7 +116,8 @@ function cel_to_duration(s::String)
     i = firstindex(str)
     matched = false
     while i <= lastindex(str)
-        m = match(r"^(\d+)(\.\d*)?(h|m|s|ms|us|µs|ns)", str[i:end])
+        # longest units first: `m` must not shadow `ms`
+        m = match(r"^(\d+)(\.\d*)?(ns|us|µs|ms|h|m|s)", str[i:end])
         m === nothing && return CelError(:invalid_argument, "invalid duration: $(repr(s))")
         intpart = parse(Int128, m.captures[1])
         unit = m.captures[3]

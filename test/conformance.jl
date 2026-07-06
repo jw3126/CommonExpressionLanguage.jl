@@ -118,6 +118,20 @@ end
 has_message_type(t::CEL.SType) =
     t.kind == CEL.TypeKind.Message || any(has_message_type, t.params)
 
+"Does the AST contain message construction (requires the proto adapter)?"
+has_struct_expr(e::CEL.CelExpr) = false
+has_struct_expr(e::CEL.StructExpr) = true
+has_struct_expr(e::CEL.SelectExpr) = has_struct_expr(e.operand)
+has_struct_expr(e::CEL.CallExpr) =
+    (e.target !== nothing && has_struct_expr(e.target)) || any(has_struct_expr, e.args)
+has_struct_expr(e::CEL.ListExpr) = any(has_struct_expr, e.elements)
+has_struct_expr(e::CEL.MapExpr) =
+    any(en -> has_struct_expr(en.key) || has_struct_expr(en.value), e.entries)
+has_struct_expr(e::CEL.ComprehensionExpr) =
+    has_struct_expr(e.iter_range) || has_struct_expr(e.accu_init) ||
+    has_struct_expr(e.loop_condition) || has_struct_expr(e.loop_step) ||
+    has_struct_expr(e.result)
+
 "Structural type equality ignoring type-parameter names."
 function stype_matches(e::CEL.SType, a::CEL.SType)
     e.kind == CEL.TypeKind.TypeParam && return a.kind == CEL.TypeKind.TypeParam
@@ -229,16 +243,26 @@ function run_test(fdict, sname, t)
         expected = true  # default matcher per simple.proto
     end
 
-    # parse
+    # parse. An expected *evaluation* error is never satisfied by a parse
+    # failure — a parser regression must not turn eval_error tests green.
     parsed = try
         parse_cel(expr)
     catch ex
         ex isa Union{CEL.ParseError,CEL.LexError} || rethrow()
-        expect_error && return (:pass, "")
         return (:fail, "parse error: $(sprint(showerror, ex))")
     end
 
-    # check (static phase; errors count as expected errors)
+    # Upfront proto-blocked classification (instead of post-hoc matching on
+    # failure messages): message construction always needs the proto adapter,
+    # and the conformance suite's enum constants are fixed identifiers.
+    if has_struct_expr(parsed.expr) ||
+       occursin(r"\b(TestAllTypes|GlobalEnum|NestedEnum|NullValue)\b", expr)
+        return (:skip, "proto-blocked: requires proto adapter")
+    end
+
+    # check. A CheckError satisfies eval_error matchers: conformance drivers
+    # run checked mode by default, and e.g. type-mismatch errors are raised
+    # at check time rather than eval time.
     if !disable_check
         cenv = CheckerEnv(; container, variables)
         checked = try
@@ -288,13 +312,6 @@ function run_conformance_file(path::AbstractString)
             catch ex
                 (:fail, "exception: $(sprint(showerror, ex))")
             end
-            # Proto message support is gated on the ProtocGen adapter
-            # (see plan milestone 8); those tests are blocked, not broken.
-            if status == :fail && (occursin("unknown message type", detail) ||
-                                   (occursin("undeclared reference", detail) &&
-                                    occursin(r"TestAllTypes|GlobalEnum|NullValue", detail)))
-                status, detail = :skip, "proto-blocked: $(detail)"
-            end
             push!(outcomes, TestOutcome(key, status, detail))
         end
     end
@@ -304,9 +321,13 @@ end
 """
 Run conformance for the given files. Failing tests must appear in `skip`
 (key => reason); skipped-but-passing entries are reported as stale.
+Returns `(outcomes, unexpected_failures, stale_skips, per_file_counts)`;
+`per_file_counts` maps file => (pass, skip) so callers can pin exact numbers
+and detect silent pass→skip drift.
 """
 function conformance_report(files::Vector{String}, skip::AbstractDict{String,String})
     all_outcomes = TestOutcome[]
+    counts = Dict{String,Tuple{Int,Int}}()
     for f in files
         path = joinpath(@__DIR__, "testdata", f * ".textproto")
         outcomes = run_conformance_file(path)
@@ -315,10 +336,11 @@ function conformance_report(files::Vector{String}, skip::AbstractDict{String,Str
         nskip = count(o -> o.status == :skip, outcomes)
         nfail = count(o -> o.status == :fail, outcomes)
         nexcused = count(o -> o.status == :fail && haskey(skip, o.key), outcomes)
+        counts[f] = (npass, nskip + nexcused)
         println(rpad(f, 16), " pass=", npass, " skip=", nskip + nexcused,
             nfail - nexcused > 0 ? " FAIL=$(nfail - nexcused)" : "")
     end
     unexpected = [o for o in all_outcomes if o.status == :fail && !haskey(skip, o.key)]
     stale = [k for k in keys(skip) if any(o -> o.key == k && o.status == :pass, all_outcomes)]
-    return all_outcomes, unexpected, stale
+    return all_outcomes, unexpected, stale, counts
 end

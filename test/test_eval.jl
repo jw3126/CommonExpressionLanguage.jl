@@ -85,6 +85,33 @@ end
     @test evaluate("timestamp(\"2009-02-13T23:31:30Z\").getHours(\"+01:00\")") === Int64(0)
 end
 
+@testset "review regressions" begin
+    # occurs check: no StackOverflowError on self-referential type variables
+    @test_throws CEL.CheckError check(CheckerEnv(), "[].all(x, x in x)")
+    # bool map keys are distinct from numeric keys (Julia isequal(true,1) is true)
+    @test iserr(evaluate("{1: \"one\"}[true]"), :no_such_key)
+    @test evaluate("size({1: \"a\", true: \"b\"})") === Int64(2)
+    @test evaluate("{1: \"a\", true: \"b\"}[true]") == "b"
+    @test evaluate("true in {1: \"a\"}") === false
+    # duration: ms unit must not lex as minutes+error; typemin seconds must range-error
+    @test evaluate("duration(\"500ms\")") == CEL.CelDuration(0, 500_000_000)
+    @test iserr(evaluate("duration(-9223372036854775808)"), :overflow)
+    # oversized integer literals are LexError, not a raw OverflowError
+    @test_throws CEL.LexError parse_cel("9999999999999999999999999999999999999999")
+    @test_throws CEL.LexError parse_cel("0xffffffffffffffffffffffffffffffffff")
+    # wrong-arity stdlib calls return no_overload in both backends
+    @test iserr(evaluate("size(1, 2)"), :no_matching_overload)
+    # PCRE-only regex constructs are rejected (CEL specifies RE2)
+    @test iserr(evaluate("\"ab\".matches(\"a(?=b)\")"), :invalid_argument)
+    @test iserr(evaluate("\"aa\".matches(\"(a)\\\\1\")"), :invalid_argument)
+    @test evaluate("\"a=b\".matches(\"a[(?=]b\")") === true  # (?= inside a class is literal, not flagged
+    # variables shadow qualified global functions (matches the checker)
+    env = Env(functions=Dict{String,Any}(
+        "a.f" => x -> "GLOBAL", "f" => (t, x) -> "RECEIVER"))
+    @test evaluate("a.f(1)", env=env) == "GLOBAL"
+    @test evaluate("a.f(1)", vars=Dict("a" => 9), env=env) == "RECEIVER"
+end
+
 @testset "types" begin
     @test evaluate("type(1)") == CEL.IntType
     @test evaluate("type(1) == int") === true

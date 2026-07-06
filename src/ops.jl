@@ -215,10 +215,22 @@ function _alt_keys(k)
 end
 
 "Lookup with CEL key equality. Returns Some(value) or nothing."
+function map_get(m::CelMap, k)
+    kv = get(m.data, normkey(k), nothing)
+    return kv === nothing ? nothing : Some(kv.second)
+end
+
+_keyclass(k) = k isa Bool ? 0x02 : k isa Union{Int64,UInt64,Float64} ? 0x01 : 0x03
+
+# Generic dicts (e.g. foreign/proto maps): guard against Julia's
+# isequal(true, 1) == true, which would let bool keys match numeric entries.
 function map_get(m::AbstractDict, k)
-    haskey(m, k) && return Some(m[k])
+    sentinel = normkey  # any value that can't be a map key
+    sk = getkey(m, k, sentinel)
+    sk !== sentinel && _keyclass(sk) == _keyclass(k) && return Some(m[sk])
     for ak in _alt_keys(k)
-        haskey(m, ak) && return Some(m[ak])
+        sk = getkey(m, ak, sentinel)
+        sk !== sentinel && _keyclass(sk) == _keyclass(ak) && return Some(m[sk])
     end
     return nothing
 end
@@ -304,12 +316,69 @@ cel_starts_with(x, y) = no_overload("startsWith", x, y)
 cel_ends_with(s::String, suf::String) = endswith(s, suf)
 cel_ends_with(x, y) = no_overload("endsWith", x, y)
 
-function cel_matches(s::String, pattern::String)
-    re = try
-        Regex(pattern)
-    catch
-        return CelError(:invalid_argument, "invalid regex: $(pattern)")
+"""
+CEL specifies RE2 regex syntax; Julia uses PCRE2, a near-superset. Reject the
+PCRE-only constructs RE2 does not support — lookarounds `(?=` `(?!` `(?<=`
+`(?<!`, atomic groups `(?>`, backreferences `\\1`..`\\9`/`\\g`/`\\k` — so they
+error like conformant CEL instead of silently matching.
+"""
+function _re2_incompatible(pattern::String)
+    i = firstindex(pattern)
+    n = lastindex(pattern)
+    inclass = false
+    while i <= n
+        c = pattern[i]
+        if c == '\\'
+            i >= n && break
+            j = nextind(pattern, i)
+            nc = pattern[j]
+            !inclass && (nc in '1':'9' || nc == 'g' || nc == 'k') && return true
+            i = j
+        elseif !inclass && c == '['
+            inclass = true
+        elseif inclass && c == ']'
+            inclass = false
+        elseif !inclass && c == '(' && i < n && pattern[nextind(pattern, i)] == '?'
+            j = nextind(pattern, nextind(pattern, i))
+            if j <= n
+                d = pattern[j]
+                (d == '=' || d == '!' || d == '>') && return true
+                if d == '<'
+                    j2 = nextind(pattern, j)
+                    j2 <= n && (pattern[j2] == '=' || pattern[j2] == '!') && return true
+                end
+            end
+        end
+        i = nextind(pattern, i)
     end
+    return false
+end
+
+# Compiled-pattern cache: `list.filter(x, x.matches('^foo'))` must not
+# recompile the PCRE program per element. Bounded; lock for thread safety.
+const _REGEX_CACHE = Dict{String,Regex}()
+const _REGEX_LOCK = ReentrantLock()
+
+function _compile_regex(pattern::String)
+    lock(_REGEX_LOCK) do
+        re = get(_REGEX_CACHE, pattern, nothing)
+        re !== nothing && return re
+        _re2_incompatible(pattern) &&
+            return CelError(:invalid_argument, "invalid regex (PCRE-only construct not in RE2): $(pattern)")
+        re = try
+            Regex(pattern)
+        catch
+            return CelError(:invalid_argument, "invalid regex: $(pattern)")
+        end
+        length(_REGEX_CACHE) >= 1024 && empty!(_REGEX_CACHE)
+        _REGEX_CACHE[pattern] = re
+        return re
+    end
+end
+
+function cel_matches(s::String, pattern::String)
+    re = _compile_regex(pattern)
+    re isa CelError && return re
     return try
         occursin(re, s)
     catch
@@ -417,7 +486,7 @@ end
 
 "Build a CEL map value from alternating key/value arguments."
 function _mkmap(kvs...)
-    m = OrderedDict{Any,Any}()
+    m = CelMap()
     for i in 1:2:length(kvs)
         k = kvs[i]
         v = kvs[i+1]
@@ -476,7 +545,7 @@ function _resolve_path(vars::Union{AbstractDict,NamedTuple}, cands, parts, std_f
     for (qname, qsym, k) in cands
         key = vars isa NamedTuple ? qsym : qname
         haskey(vars, key) || continue
-        v = vars[key]
+        v = to_cel(vars[key])   # canonicalize like the closure backend does
         for i in k+1:length(parts)
             v = cel_select(v, parts[i])
             v isa CelError && return v
@@ -487,11 +556,19 @@ function _resolve_path(vars::Union{AbstractDict,NamedTuple}, cands, parts, std_f
     return CelError(:no_such_attribute, "undeclared reference to '$(join(parts, '.'))'")
 end
 
+"Does any candidate name have a binding? (runtime side of `target_is_variable`)"
+function _has_binding(vars::Union{AbstractDict,NamedTuple}, cands)
+    for (qname, qsym, k) in cands
+        haskey(vars, vars isa NamedTuple ? qsym : qname) && return true
+    end
+    return false
+end
+
 "Internal: step function of the transformMap macro."
 function cel_map_insert(m::AbstractDict, k, v)
     valid_map_key(k) || return CelError(:invalid_argument, "unsupported map key type: $(typename(k))")
     map_has(m, k) && return CelError(:invalid_argument, "insert failed: key $(k) already exists")
-    out = OrderedDict{Any,Any}(m)
+    out = CelMap(m)
     out[k] = v
     return out
 end

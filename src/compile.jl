@@ -59,7 +59,8 @@ to_cel(x::Unsigned) = UInt64(x)
 to_cel(x::AbstractFloat) = Float64(x)
 to_cel(x::AbstractString) = String(x)
 to_cel(x::AbstractVector) = Any[to_cel(v) for v in x]
-to_cel(x::AbstractDict) = OrderedDict{Any,Any}(to_cel(k) => to_cel(v) for (k, v) in x)
+to_cel(x::CelMap) = x
+to_cel(x::AbstractDict) = CelMap(to_cel(k) => to_cel(v) for (k, v) in x)
 to_cel(x) = x  # foreign values (proto messages) pass through to the adapter
 
 """
@@ -118,6 +119,29 @@ function name_candidates(container::String, parts::Vector{String})
         end
     end
     return cands
+end
+
+"""
+The qualified global function a receiver-style call `tpath.fname(args)` could
+resolve to, or nothing. Per cel-spec name resolution — implemented here once
+and consulted by the checker and both backends — this only applies when the
+target path does NOT resolve as a variable: variables shadow qualified
+functions (see `target_is_variable`).
+"""
+function qualified_fn_candidate(functions, container::String, tpath::Vector{String}, fname::String)
+    for (qname, k) in name_candidates(container, [tpath; fname])
+        k == length(tpath) + 1 || continue
+        haskey(functions, qname) && return qname
+    end
+    return nothing
+end
+
+"Does any candidate resolution of `varcands` name a bound variable (oracle-based)?"
+function target_is_variable(has_var, varcands)
+    for (qname, _) in varcands
+        has_var(qname) && return true
+    end
+    return false
 end
 
 "Collect the maximal ident-rooted select path, or nothing."
@@ -233,7 +257,7 @@ function cnode(env::Env, sc::Vector{String}, e::MapExpr)
     vfs = [cnode(env, sc, en.value) for en in e.entries]
     n = length(kfs)
     return function (act)
-        m = OrderedDict{Any,Any}()
+        m = CelMap()
         for i in 1:n
             k = kfs[i](act)
             k isa CelError && return k
@@ -312,22 +336,34 @@ function cnode(env::Env, sc::Vector{String}, e::CallExpr)
         end
     end
 
-    # --- namespaced global call spelled as a receiver call: a.b.f(x) ---
+    # --- receiver-style call: a.b.f(x) ---
+    # Either a genuine receiver call (target evaluates to the first argument)
+    # or a namespaced global function "a.b.f". Per cel-spec, a target path
+    # that resolves as a VARIABLE shadows the qualified function — matching
+    # the checker; the variable check must happen against runtime bindings.
     if e.target !== nothing
-        tpath = select_path(e.target)
-        if tpath !== nothing && !(tpath[1] in sc)
-            for (qname, k) in name_candidates(env.container, [tpath; fname])
-                k == length(tpath) + 1 || continue
-                if haskey(env.functions, qname)
-                    return compile_strict_call(env, sc, qname, env.functions[qname], e.args)
-                end
-            end
-        end
-        # receiver call: target becomes the first argument
         f = get(env.functions, fname, nothing)
-        args = CelExpr[e.target; e.args]
-        f === nothing && return _ -> CelError(:unknown_function, "unknown function '$(fname)'")
-        return compile_strict_call(env, sc, fname, f, args)
+        recvf = if f === nothing
+            _ -> CelError(:unknown_function, "unknown function '$(fname)'")
+        else
+            compile_strict_call(env, sc, fname, f, CelExpr[e.target; e.args])
+        end
+        tpath = select_path(e.target)
+        (tpath === nothing || tpath[1] in sc) && return recvf
+        qfname = qualified_fn_candidate(env.functions, env.container, tpath, fname)
+        qfname === nothing && return recvf
+        globf = compile_strict_call(env, sc, qfname, env.functions[qfname], e.args)
+        varcands = name_candidates(env.container, tpath)
+        return function (act)
+            base = act
+            while base.parent !== nothing
+                base = base.parent
+            end
+            if target_is_variable(qn -> lookupvar(base, qn) !== nothing, varcands)
+                return recvf(act)
+            end
+            return globf(act)
+        end
     end
 
     # --- plain global call (container-qualified lookup) ---

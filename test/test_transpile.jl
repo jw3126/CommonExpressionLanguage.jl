@@ -36,6 +36,26 @@ end
     @test err isa CelError && err.kind == :no_such_attribute
 end
 
+@testset "backend parity (review regressions)" begin
+    # bindings are canonicalized via to_cel, same as the closure backend
+    f = eval(transpile_function("x + 1"))
+    @test Base.invokelatest(f, Dict("x" => Int32(5))) === Int64(6)
+    @test Base.invokelatest(f, (x = Int32(5),)) === Int64(6)
+    # varmap expressions are canonicalized too (proto int32 fields etc.)
+    g = eval(:(msg -> $(transpile("this + 1";
+        varmap=Dict{String,Any}("this" => :msg), varsdict=nothing))))
+    @test Base.invokelatest(g, Int32(5)) === Int64(6)
+    # wrong-arity stdlib call returns an error value instead of MethodError
+    h = eval(transpile_function("size(1, 2)"))
+    @test Base.invokelatest(h, Dict{String,Any}()) isa CelError
+    # variables shadow qualified global functions, decided at runtime
+    env = Env(functions=Dict{String,Any}(
+        "a.f" => x -> "GLOBAL", "f" => (t, x) -> "RECEIVER"))
+    ft = eval(transpile_function("a.f(1)"; env))
+    @test Base.invokelatest(ft, Dict{String,Any}()) == "GLOBAL"
+    @test Base.invokelatest(ft, Dict{String,Any}("a" => 9)) == "RECEIVER"
+end
+
 @testset "NamedTuple bindings" begin
     f = eval(transpile_function("a + b"))
     @test Base.invokelatest(f, (a=Int64(1), b=Int64(2))) === Int64(3)

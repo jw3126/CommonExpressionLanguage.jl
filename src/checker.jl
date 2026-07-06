@@ -243,9 +243,18 @@ function subst(t::SType, subs::Dict{String,SType})
     return SType(t.kind, [subst(p, subs) for p in t.params], t.name)
 end
 
+"Occurs check: does type variable `name` occur in `t` (under `subs`)?"
+function occurs_in(name::String, t::SType, subs::Dict{String,SType})
+    t = subst(t, subs)
+    t.kind == TypeKind.TypeParam && return t.name == name
+    return any(p -> occurs_in(name, p, subs), t.params)
+end
+
 """
 Unify `formal` (may contain type params) against `actual`. Mutates `subs`
-on success. `dyn` unifies with everything.
+on success. `dyn` unifies with everything. Binding a type variable to a type
+containing itself fails (occurs check) — otherwise `subst` would recurse
+forever, e.g. on `[].all(x, x in x)`.
 """
 function unify!(subs::Dict{String,SType}, formal::SType, actual::SType)
     formal = subst(formal, subs)
@@ -253,10 +262,13 @@ function unify!(subs::Dict{String,SType}, formal::SType, actual::SType)
     (formal.kind == TypeKind.Dyn || actual.kind == TypeKind.Dyn) && return true
     actual.kind == TypeKind.Error && return true
     if formal.kind == TypeKind.TypeParam
-        formal.name == actual.name || (subs[formal.name] = actual)
+        formal.name == actual.name && return true
+        occurs_in(formal.name, actual, subs) && return false
+        subs[formal.name] = actual
         return true
     end
     if actual.kind == TypeKind.TypeParam
+        occurs_in(actual.name, formal, subs) && return false
         subs[actual.name] = formal
         return true
     end
@@ -287,10 +299,12 @@ function join_types(subs::Dict{String,SType}, a::SType, b::SType)
     a.kind == TypeKind.Error && return b
     b.kind == TypeKind.Error && return a
     if a.kind == TypeKind.TypeParam
+        occurs_in(a.name, b, subs) && return DYN_T
         subs[a.name] = b
         return b
     end
     if b.kind == TypeKind.TypeParam
+        occurs_in(b.name, a, subs) && return DYN_T
         subs[b.name] = a
         return a
     end
@@ -466,18 +480,15 @@ function infer(st::CheckState, e::CallExpr)
     is_receiver_call = false
     if e.target !== nothing
         # namespaced global function spelled as receiver call?
+        # variables (incl. comprehension scope) shadow qualified functions —
+        # same precedence rule as both backends (see qualified_fn_candidate)
         tpath = select_path(e.target)
         resolved_global = false
         if tpath !== nothing && lookup_scope(st, tpath[1]) === nothing && resolve_ident(st, tpath) === nothing
-            for (qname, k) in name_candidates(st.env.container, [tpath; fname])
-                k == length(tpath) + 1 || continue
-                if haskey(st.env.functions, qname)
-                    fname = qname
-                    resolved_global = true
-                    break
-                end
-            end
-            resolved_global || throw(CheckError("undeclared reference to '$(join(tpath, '.'))'"))
+            qfname = qualified_fn_candidate(st.env.functions, st.env.container, tpath, fname)
+            qfname === nothing && throw(CheckError("undeclared reference to '$(join(tpath, '.'))'"))
+            fname = qfname
+            resolved_global = true
         end
         if !resolved_global
             push!(argts, infer(st, e.target))

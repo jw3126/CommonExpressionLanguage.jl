@@ -162,7 +162,7 @@ function lex_number!(lx::Lexer)
         end
         lx.i == start && throw(LexError("malformed hex literal", pos))
         digits = unsafe_substr(lx.src, start, lx.i - start)
-        mag = parse(UInt128, digits; base=16)
+        mag = parse_magnitude(digits, 16, pos)
         if peekb(lx) == UInt8('u') || peekb(lx) == UInt8('U')
             lx.i += 1
             mag <= typemax(UInt64) || throw(LexError("uint literal out of range", pos))
@@ -206,11 +206,18 @@ function lex_number!(lx::Lexer)
     end
     if peekb(lx) == UInt8('u') || peekb(lx) == UInt8('U')
         lx.i += 1
-        mag = parse(UInt128, text)
+        mag = parse_magnitude(text, 10, pos)
         mag <= typemax(UInt64) || throw(LexError("uint literal out of range", pos))
         return Token(TokenKind.UINT, UInt64(mag), pos)
     end
-    return Token(TokenKind.INT, parse(UInt128, text), pos)  # magnitude; parser folds sign
+    return Token(TokenKind.INT, parse_magnitude(text, 10, pos), pos)  # magnitude; parser folds sign
+end
+
+"Parse an integer-literal magnitude, turning overflow into LexError instead of OverflowError."
+function parse_magnitude(digits::String, base::Int, pos::Int)
+    v = tryparse(UInt128, digits; base)
+    v === nothing && throw(LexError("int literal out of range", pos))
+    return v
 end
 
 function lex_string!(lx::Lexer, pos::Int; raw::Bool, isbytes::Bool)
