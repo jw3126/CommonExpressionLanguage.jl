@@ -2,6 +2,7 @@ module CommonExpressionLanguage
 
 using OrderedCollections: OrderedDict
 using Dates
+using EnumX: @enumx
 
 include("values.jl")
 include("adapter.jl")

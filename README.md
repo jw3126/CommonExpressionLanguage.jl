@@ -61,9 +61,11 @@ ex = transpile("size(this) <= 100";
 # splice `ex` into a generated function body:
 # function validate(msg::MyMessage); $ex; end
 
-# or get a runnable function definition taking a bindings dict
+# or get a runnable function definition taking bindings
 f = eval(transpile_function("a + b"))
-Base.invokelatest(f, Dict{String,Any}("a" => 1, "b" => 2))  # 3
+f((a = 1, b = 2))                            # 3 — NamedTuple: lookups
+                                             # constant-fold, no dict overhead
+f(Dict{String,Any}("a" => 1, "b" => 2))      # 3 — dict also works
 ```
 
 ### Timezones

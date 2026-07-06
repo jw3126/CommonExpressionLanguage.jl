@@ -116,11 +116,11 @@ function from_type(d::AbstractDict)
 end
 
 has_message_type(t::CEL.SType) =
-    t.kind == :message || any(has_message_type, t.params)
+    t.kind == CEL.TypeKind.Message || any(has_message_type, t.params)
 
 "Structural type equality ignoring type-parameter names."
 function stype_matches(e::CEL.SType, a::CEL.SType)
-    e.kind == :type_param && return a.kind == :type_param
+    e.kind == CEL.TypeKind.TypeParam && return a.kind == CEL.TypeKind.TypeParam
     e.kind == a.kind || return false
     e.name == a.name || return false
     length(e.params) == length(a.params) || return false

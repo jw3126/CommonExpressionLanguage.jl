@@ -46,13 +46,16 @@ end
 """
     transpile_function(parsed_or_source; fname=gensym, env, varmap, varsdict=:vars) -> Expr
 
-Wrap `transpile` output in a `function fname(vars::AbstractDict) ... end`
-definition (or with no argument if `varsdict=nothing`).
+Wrap `transpile` output in a function definition
+`function fname(vars::Union{AbstractDict,NamedTuple}) ... end`
+(or with no argument if `varsdict=nothing`). Calling the function with a
+`NamedTuple` avoids dictionary overhead: variable lookups constant-fold to
+direct field access.
 """
 function transpile_function(parsed; fname::Symbol=gensym("cel_program"), env::Env=Env(),
     varmap=Dict{String,Any}(), varsdict::Union{Symbol,Nothing}=:vars)
     body = transpile(parsed isa AbstractString ? parse_cel(parsed) : parsed; env, varmap, varsdict)
-    args = varsdict === nothing ? [] : [:($varsdict::AbstractDict)]
+    args = varsdict === nothing ? [] : [:($varsdict::Union{AbstractDict,NamedTuple})]
     return Expr(:function, Expr(:call, fname, args...), Expr(:block, body))
 end
 
@@ -111,7 +114,8 @@ function resolve_expr(ctx::TranspileCtx, parts::Vector{String})
     end
     fallback_ex = fallback === nothing ? nothing : Expr(:call, _ref(:CelType), fallback.name)
     return Expr(:call, _ref(:_resolve_path), ctx.varsdict,
-        Tuple(cands), parts, fallback_ex)
+        Tuple((qname, Symbol(qname), k) for (qname, k) in cands),
+        parts, fallback_ex)
 end
 
 tnode(ctx::TranspileCtx, e::ListExpr) =

@@ -162,12 +162,15 @@ end
 # ------------------------------------------------------------------
 
 """
-Provider hook for IANA timezone names: a function
-`(name::String, epoch_seconds::Int64) -> Union{Int64,Nothing}` returning the
-UTC offset in seconds at that instant. Installed by the TimeZones.jl package
-extension; the core only resolves numeric offsets like "+11:00" and "UTC".
+    iana_tz_offset(name::String, epoch_seconds::Int64) -> Union{Int64,Nothing}
+
+UTC offset in seconds of the IANA timezone `name` at the given instant, or
+`nothing` for unknown names. The core package deliberately ships no tzdata:
+this function has NO methods here; the TimeZones.jl package extension adds
+one, which `tz_offset` detects via `hasmethod`. Numeric offsets like
+"+11:00" and "UTC" always work.
 """
-const TZ_PROVIDER = Ref{Any}(nothing)
+function iana_tz_offset end
 
 function tz_offset(tz::String, epoch_s::Int64)
     (tz == "" || tz == "UTC" || tz == "Z") && return Int64(0)
@@ -176,15 +179,13 @@ function tz_offset(tz::String, epoch_s::Int64)
         sign = m.captures[1] == "-" ? -1 : 1
         return Int64(sign * (parse(Int, m.captures[2]) * 3600 + parse(Int, m.captures[3]) * 60))
     end
-    provider = TZ_PROVIDER[]
-    if provider !== nothing
-        off = provider(tz, epoch_s)
+    if hasmethod(iana_tz_offset, Tuple{String,Int64})
+        off = iana_tz_offset(tz, epoch_s)
         off isa Int64 && return off
+        return CelError(:invalid_argument, "unknown timezone: $(repr(tz))")
     end
     return CelError(:invalid_argument,
-        provider === nothing ?
-        "IANA timezone names require the TimeZones package (load `using TimeZones`): $(repr(tz))" :
-        "unknown timezone: $(repr(tz))")
+        "IANA timezone names require the TimeZones package (load `using TimeZones`): $(repr(tz))")
 end
 
 function _civil(ts::CelTimestamp, tz::String)

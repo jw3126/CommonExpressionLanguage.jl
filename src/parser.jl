@@ -30,13 +30,13 @@ end
     return t
 end
 
-function expect!(p::Parser, kind::Symbol)
+function expect!(p::Parser, kind::TokenKind.T)
     t = peek(p)
     t.kind == kind || throw(ParseError("expected $(kind), found $(t.kind)", t.pos))
     return advance!(p)
 end
 
-accept!(p::Parser, kind::Symbol) = peekkind(p) == kind ? (advance!(p); true) : false
+accept!(p::Parser, kind::TokenKind.T) = peekkind(p) == kind ? (advance!(p); true) : false
 
 function newid!(p::Parser, pos::Int)
     id = p.next_id
@@ -55,7 +55,7 @@ function parse_cel(source::AbstractString)
     p = Parser(src)
     e = parse_expr!(p)
     t = peek(p)
-    t.kind == :EOF || throw(ParseError("unexpected token $(t.kind) after expression", t.pos))
+    t.kind == TokenKind.EOF || throw(ParseError("unexpected token $(t.kind) after expression", t.pos))
     return ParsedExpr(e, src, p.positions)
 end
 
@@ -68,10 +68,10 @@ function parse_expr!(p::Parser)
     p.depth += 1
     checkdepth(p)
     cond = parse_or!(p)
-    result = if peekkind(p) == Symbol("?")
+    result = if peekkind(p) == TokenKind.QUESTION
         qpos = advance!(p).pos
         tval = parse_or!(p)
-        expect!(p, Symbol(":"))
+        expect!(p, TokenKind.COLON)
         fval = parse_expr!(p)
         CallExpr(newid!(p, qpos), nothing, "_?_:_", [cond, tval, fval])
     else
@@ -83,7 +83,7 @@ end
 
 function parse_or!(p::Parser)
     e = parse_and!(p)
-    while peekkind(p) == Symbol("||")
+    while peekkind(p) == TokenKind.OR
         opos = advance!(p).pos
         rhs = parse_and!(p)
         e = CallExpr(newid!(p, opos), nothing, "_||_", [e, rhs])
@@ -93,7 +93,7 @@ end
 
 function parse_and!(p::Parser)
     e = parse_relation!(p)
-    while peekkind(p) == Symbol("&&")
+    while peekkind(p) == TokenKind.AND
         opos = advance!(p).pos
         rhs = parse_relation!(p)
         e = CallExpr(newid!(p, opos), nothing, "_&&_", [e, rhs])
@@ -102,9 +102,9 @@ function parse_and!(p::Parser)
 end
 
 const RELOPS = Dict(
-    Symbol("<") => "_<_", Symbol("<=") => "_<=_", Symbol(">") => "_>_",
-    Symbol(">=") => "_>=_", Symbol("==") => "_==_", Symbol("!=") => "_!=_",
-    :IN => "@in",
+    TokenKind.LT => "_<_", TokenKind.LE => "_<=_", TokenKind.GT => "_>_",
+    TokenKind.GE => "_>=_", TokenKind.EQ => "_==_", TokenKind.NE => "_!=_",
+    TokenKind.IN => "@in",
 )
 
 function parse_relation!(p::Parser)
@@ -119,20 +119,20 @@ end
 
 function parse_addition!(p::Parser)
     e = parse_multiplication!(p)
-    while peekkind(p) == Symbol("+") || peekkind(p) == Symbol("-")
+    while peekkind(p) == TokenKind.PLUS || peekkind(p) == TokenKind.MINUS
         t = advance!(p)
         rhs = parse_multiplication!(p)
-        e = CallExpr(newid!(p, t.pos), nothing, t.kind == Symbol("+") ? "_+_" : "_-_", [e, rhs])
+        e = CallExpr(newid!(p, t.pos), nothing, t.kind == TokenKind.PLUS ? "_+_" : "_-_", [e, rhs])
     end
     return e
 end
 
 function parse_multiplication!(p::Parser)
     e = parse_unary!(p)
-    while peekkind(p) in (Symbol("*"), Symbol("/"), Symbol("%"))
+    while peekkind(p) in (TokenKind.STAR, TokenKind.SLASH, TokenKind.PERCENT)
         t = advance!(p)
         rhs = parse_unary!(p)
-        fname = t.kind == Symbol("*") ? "_*_" : t.kind == Symbol("/") ? "_/_" : "_%_"
+        fname = t.kind == TokenKind.STAR ? "_*_" : t.kind == TokenKind.SLASH ? "_/_" : "_%_"
         e = CallExpr(newid!(p, t.pos), nothing, fname, [e, rhs])
     end
     return e
@@ -141,19 +141,19 @@ end
 # Unary = Member | "!" {"!"} Member | "-" {"-"} Member
 function parse_unary!(p::Parser)
     k = peekkind(p)
-    if k == Symbol("!")
+    if k == TokenKind.BANG
         pos = peek(p).pos
         count = 0
-        while peekkind(p) == Symbol("!")
+        while peekkind(p) == TokenKind.BANG
             advance!(p)
             count += 1
         end
         e = parse_member!(p)
         return isodd(count) ? CallExpr(newid!(p, pos), nothing, "!_", [e]) : e
-    elseif k == Symbol("-")
+    elseif k == TokenKind.MINUS
         pos = peek(p).pos
         count = 0
-        while peekkind(p) == Symbol("-")
+        while peekkind(p) == TokenKind.MINUS
             advance!(p)
             count += 1
         end
@@ -161,15 +161,15 @@ function parse_unary!(p::Parser)
         # signs and with no postfix ops; handle before parse_primary!'s
         # range check rejects it.
         t = peek(p)
-        if isodd(count) && t.kind == :INT && t.value::UInt128 == UInt128(1) << 63 &&
-           p.tokens[p.pos+1].kind ∉ (Symbol("."), Symbol("["))
+        if isodd(count) && t.kind == TokenKind.INT && t.value::UInt128 == UInt128(1) << 63 &&
+           p.tokens[p.pos+1].kind ∉ (TokenKind.DOT, TokenKind.LBRACKET)
             advance!(p)
             return ConstExpr(newid!(p, t.pos), typemin(Int64))
         end
         # Fold sign only into a literal DIRECTLY following the minus signs
         # (cel-go does not fold through parentheses: -(-MinInt) must overflow
         # at runtime).
-        direct_literal = t.kind == :INT || t.kind == :FLOAT
+        direct_literal = t.kind == TokenKind.INT || t.kind == TokenKind.FLOAT
         e = parse_member!(p)
         isodd(count) || return e
         if direct_literal && e isa ConstExpr
@@ -188,21 +188,21 @@ function parse_member!(p::Parser)
     e = parse_primary!(p)
     while true
         k = peekkind(p)
-        if k == Symbol(".")
+        if k == TokenKind.DOT
             dotpos = advance!(p).pos
             field = expect_field_name!(p)
-            if peekkind(p) == Symbol("(")
+            if peekkind(p) == TokenKind.LPAREN
                 advance!(p)
-                args = parse_exprlist!(p, Symbol(")"))
-                expect!(p, Symbol(")"))
+                args = parse_exprlist!(p, TokenKind.RPAREN)
+                expect!(p, TokenKind.RPAREN)
                 e = expand_receiver_macro(p, dotpos, e, field, args)
             else
                 e = SelectExpr(newid!(p, dotpos), e, field, false)
             end
-        elseif k == Symbol("[")
+        elseif k == TokenKind.LBRACKET
             bpos = advance!(p).pos
             idx = parse_expr!(p)
-            expect!(p, Symbol("]"))
+            expect!(p, TokenKind.RBRACKET)
             e = CallExpr(newid!(p, bpos), nothing, "_[_]", [e, idx])
         else
             break
@@ -217,18 +217,18 @@ end
 # excluded), per cel-spec.
 function expect_field_name!(p::Parser)
     t = peek(p)
-    if t.kind == :IDENT || t.kind == :RESERVED || t.kind == :QIDENT
+    if t.kind == TokenKind.IDENT || t.kind == TokenKind.RESERVED || t.kind == TokenKind.QIDENT
         advance!(p)
         return t.value::String
     end
     throw(ParseError("expected field name, found $(t.kind)", t.pos))
 end
 
-function parse_exprlist!(p::Parser, terminator::Symbol)
+function parse_exprlist!(p::Parser, terminator::TokenKind.T)
     args = CelExpr[]
     peekkind(p) == terminator && return args
     push!(args, parse_expr!(p))
-    while accept!(p, Symbol(","))
+    while accept!(p, TokenKind.COMMA)
         peekkind(p) == terminator && break  # trailing comma
         push!(args, parse_expr!(p))
     end
@@ -238,40 +238,40 @@ end
 function parse_primary!(p::Parser)
     t = peek(p)
     k = t.kind
-    if k == :INT
+    if k == TokenKind.INT
         advance!(p)
         mag = t.value::UInt128
         mag <= UInt128(typemax(Int64)) || throw(ParseError("int literal out of range", t.pos))
         return ConstExpr(newid!(p, t.pos), Int64(mag))
-    elseif k == :UINT || k == :FLOAT || k == :STRING || k == :BYTES || k == :BOOL || k == :NULL
+    elseif k in (TokenKind.UINT, TokenKind.FLOAT, TokenKind.STRING, TokenKind.BYTES, TokenKind.BOOL, TokenKind.NULL)
         advance!(p)
         return ConstExpr(newid!(p, t.pos), t.value)
-    elseif k == Symbol("(")
+    elseif k == TokenKind.LPAREN
         advance!(p)
         e = parse_expr!(p)
-        expect!(p, Symbol(")"))
+        expect!(p, TokenKind.RPAREN)
         return e
-    elseif k == Symbol("[")
+    elseif k == TokenKind.LBRACKET
         advance!(p)
-        elems = parse_exprlist!(p, Symbol("]"))
-        expect!(p, Symbol("]"))
+        elems = parse_exprlist!(p, TokenKind.RBRACKET)
+        expect!(p, TokenKind.RBRACKET)
         return ListExpr(newid!(p, t.pos), elems)
-    elseif k == Symbol("{")
+    elseif k == TokenKind.LBRACE
         advance!(p)
         entries = MapEntry[]
-        while peekkind(p) != Symbol("}")
+        while peekkind(p) != TokenKind.RBRACE
             kpos = peek(p).pos
             key = parse_expr!(p)
-            expect!(p, Symbol(":"))
+            expect!(p, TokenKind.COLON)
             val = parse_expr!(p)
             push!(entries, MapEntry(newid!(p, kpos), key, val))
-            accept!(p, Symbol(",")) || break
+            accept!(p, TokenKind.COMMA) || break
         end
-        expect!(p, Symbol("}"))
+        expect!(p, TokenKind.RBRACE)
         return MapExpr(newid!(p, t.pos), entries)
-    elseif k == :IDENT || k == Symbol(".")
+    elseif k == TokenKind.IDENT || k == TokenKind.DOT
         return parse_ident_or_call!(p)
-    elseif k == :RESERVED
+    elseif k == TokenKind.RESERVED
         throw(ParseError("reserved word '$(t.value)' cannot be used as an identifier", t.pos))
     else
         throw(ParseError("unexpected token $(k)", t.pos))
@@ -281,14 +281,14 @@ end
 # ["."] IDENT ["(" [ExprList] ")"]  |  ["."] IDENT {"." IDENT} "{" [FieldInits] "}"
 function parse_ident_or_call!(p::Parser)
     start = peek(p).pos
-    absolute = accept!(p, Symbol("."))
-    t = expect!(p, :IDENT)
+    absolute = accept!(p, TokenKind.DOT)
+    t = expect!(p, TokenKind.IDENT)
     name = (absolute ? "." : "") * (t.value::String)
 
-    if peekkind(p) == Symbol("(")
+    if peekkind(p) == TokenKind.LPAREN
         advance!(p)
-        args = parse_exprlist!(p, Symbol(")"))
-        expect!(p, Symbol(")"))
+        args = parse_exprlist!(p, TokenKind.RPAREN)
+        expect!(p, TokenKind.RPAREN)
         return expand_global_macro(p, start, name, args)
     end
 
@@ -297,23 +297,23 @@ function parse_ident_or_call!(p::Parser)
     # to parse_member!.
     if message_construction_ahead(p)
         parts = [name]
-        while peekkind(p) == Symbol(".")
+        while peekkind(p) == TokenKind.DOT
             advance!(p)
-            ti = expect!(p, :IDENT)
+            ti = expect!(p, TokenKind.IDENT)
             push!(parts, ti.value::String)
-            peekkind(p) == Symbol("{") && break
+            peekkind(p) == TokenKind.LBRACE && break
         end
-        expect!(p, Symbol("{"))
+        expect!(p, TokenKind.LBRACE)
         entries = FieldEntry[]
-        while peekkind(p) != Symbol("}")
+        while peekkind(p) != TokenKind.RBRACE
             fpos = peek(p).pos
             fieldname = expect_field_name!(p)
-            expect!(p, Symbol(":"))
+            expect!(p, TokenKind.COLON)
             val = parse_expr!(p)
             push!(entries, FieldEntry(newid!(p, fpos), fieldname, val))
-            accept!(p, Symbol(",")) || break
+            accept!(p, TokenKind.COMMA) || break
         end
-        expect!(p, Symbol("}"))
+        expect!(p, TokenKind.RBRACE)
         return StructExpr(newid!(p, start), join(parts, "."), entries)
     end
 
@@ -324,11 +324,11 @@ end
 function message_construction_ahead(p::Parser)
     i = p.pos
     toks = p.tokens
-    while i <= length(toks) && toks[i].kind == Symbol(".")
-        i + 1 <= length(toks) && toks[i+1].kind == :IDENT || return false
+    while i <= length(toks) && toks[i].kind == TokenKind.DOT
+        i + 1 <= length(toks) && toks[i+1].kind == TokenKind.IDENT || return false
         i += 2
     end
-    return i <= length(toks) && toks[i].kind == Symbol("{")
+    return i <= length(toks) && toks[i].kind == TokenKind.LBRACE
 end
 
 # ------------------------------------------------------------------

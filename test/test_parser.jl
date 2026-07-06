@@ -7,7 +7,7 @@ root(s) = parse_cel(s).expr
 
 @testset "lexer" begin
     toks = CEL.tokenize("1 + 2u * 3.5")
-    @test [t.kind for t in toks] == [:INT, Symbol("+"), :UINT, Symbol("*"), :FLOAT, :EOF]
+    @test [t.kind for t in toks] == [CEL.TokenKind.INT, CEL.TokenKind.PLUS, CEL.TokenKind.UINT, CEL.TokenKind.STAR, CEL.TokenKind.FLOAT, CEL.TokenKind.EOF]
     @test CEL.tokenize("0x2Au")[1].value === UInt64(42)
     @test CEL.tokenize("1e3")[1].value === 1000.0
     @test CEL.tokenize(".5")[1].value === 0.5
@@ -20,7 +20,7 @@ root(s) = parse_cel(s).expr
     @test CEL.tokenize("b'abc'")[1].value == CEL.CelBytes("abc")
     @test CEL.tokenize("'''x''y'''")[1].value == "x''y"
     @test CEL.tokenize("\"\"\"line1\nline2\"\"\"")[1].value == "line1\nline2"
-    @test CEL.tokenize("// comment\nfoo")[1].kind == :IDENT
+    @test CEL.tokenize("// comment\nfoo")[1].kind == CEL.TokenKind.IDENT
     @test_throws CEL.LexError CEL.tokenize("'unterminated")
     @test_throws CEL.LexError CEL.tokenize("b'\\u0041'")
     @test_throws CEL.LexError CEL.tokenize("@")

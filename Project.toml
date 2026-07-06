@@ -5,6 +5,7 @@ version = "1.0.0-DEV"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+EnumX = "4e289a0a-7415-4d19-859d-a7e5c4648b56"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
@@ -16,6 +17,7 @@ CommonExpressionLanguageTimeZonesExt = "TimeZones"
 
 [compat]
 Dates = "1"
+EnumX = "1"
 OrderedCollections = "1"
 Printf = "1"
 TimeZones = "1"

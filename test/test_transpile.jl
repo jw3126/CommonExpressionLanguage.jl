@@ -36,6 +36,18 @@ end
     @test err isa CelError && err.kind == :no_such_attribute
 end
 
+@testset "NamedTuple bindings" begin
+    f = eval(transpile_function("a + b"))
+    @test Base.invokelatest(f, (a=Int64(1), b=Int64(2))) === Int64(3)
+    @test Base.invokelatest(f, Dict{String,Any}("a" => Int64(1), "b" => Int64(2))) === Int64(3)
+    err = Base.invokelatest(f, (a=Int64(1),))
+    @test err isa CelError && err.kind == :no_such_attribute
+    # closure backend accepts NamedTuples too
+    @test evaluate("a + b", vars=(a=1, b=2)) === Int64(3)
+    prog = compile("x * 2")
+    @test prog((x=21,)) === Int64(42)
+end
+
 @testset "transpiled output is printable source" begin
     ex = transpile("1 + x"; varsdict=:vars)
     s = string(ex)

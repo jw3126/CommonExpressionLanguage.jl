@@ -8,43 +8,53 @@
 # Static types
 # ------------------------------------------------------------------
 
+@enumx TypeKind begin
+    Int; UInt; Double; Bool; String; Bytes; Null; Dyn; Error
+    Timestamp; Duration; List; Map; Type; Message; TypeParam
+end
+
 """
-Static CEL type. `kind` is one of :int, :uint, :double, :bool, :string,
-:bytes, :null, :dyn, :error, :timestamp, :duration, :list, :map, :type,
-:message, :type_param. `params` hold list/map/type parameters; `name` the
-message or type-parameter name.
+Static CEL type. `params` hold list/map/type parameters; `name` the message
+or type-parameter name.
 """
 struct SType
-    kind::Symbol
+    kind::TypeKind.T
     params::Vector{SType}
     name::String
 end
-SType(kind::Symbol) = SType(kind, SType[], "")
+SType(kind::TypeKind.T) = SType(kind, SType[], "")
 Base.:(==)(a::SType, b::SType) = a.kind == b.kind && a.params == b.params && a.name == b.name
 Base.hash(a::SType, h::UInt) = hash((a.kind, a.params, a.name), h)
 
-const INT_T = SType(:int)
-const UINT_T = SType(:uint)
-const DOUBLE_T = SType(:double)
-const BOOL_T = SType(:bool)
-const STRING_T = SType(:string)
-const BYTES_T = SType(:bytes)
-const NULL_T = SType(:null)
-const DYN_T = SType(:dyn)
-const TIMESTAMP_T = SType(:timestamp)
-const DURATION_T = SType(:duration)
-list_of(t::SType) = SType(:list, [t], "")
-map_of(k::SType, v::SType) = SType(:map, [k, v], "")
-type_of(t::SType) = SType(:type, [t], "")
-msg_t(name::String) = SType(:message, SType[], name)
-param_t(name::String) = SType(:type_param, SType[], name)
+const INT_T = SType(TypeKind.Int)
+const UINT_T = SType(TypeKind.UInt)
+const DOUBLE_T = SType(TypeKind.Double)
+const BOOL_T = SType(TypeKind.Bool)
+const STRING_T = SType(TypeKind.String)
+const BYTES_T = SType(TypeKind.Bytes)
+const NULL_T = SType(TypeKind.Null)
+const DYN_T = SType(TypeKind.Dyn)
+const TIMESTAMP_T = SType(TypeKind.Timestamp)
+const DURATION_T = SType(TypeKind.Duration)
+list_of(t::SType) = SType(TypeKind.List, [t], "")
+map_of(k::SType, v::SType) = SType(TypeKind.Map, [k, v], "")
+type_of(t::SType) = SType(TypeKind.Type, [t], "")
+msg_t(name::String) = SType(TypeKind.Message, SType[], name)
+param_t(name::String) = SType(TypeKind.TypeParam, SType[], name)
+
+const TYPE_KIND_NAMES = Dict(
+    TypeKind.Int => "int", TypeKind.UInt => "uint", TypeKind.Double => "double",
+    TypeKind.Bool => "bool", TypeKind.String => "string", TypeKind.Bytes => "bytes",
+    TypeKind.Null => "null_type", TypeKind.Dyn => "dyn", TypeKind.Error => "error",
+    TypeKind.Timestamp => "google.protobuf.Timestamp",
+    TypeKind.Duration => "google.protobuf.Duration",
+    TypeKind.List => "list", TypeKind.Map => "map", TypeKind.Type => "type",
+    TypeKind.TypeParam => "type_param",
+)
 
 function type_name(t::SType)
-    t.kind == :message && return t.name
-    t.kind == :null && return "null_type"
-    t.kind == :timestamp && return "google.protobuf.Timestamp"
-    t.kind == :duration && return "google.protobuf.Duration"
-    return String(t.kind)
+    t.kind == TypeKind.Message && return t.name
+    return TYPE_KIND_NAMES[t.kind]
 end
 
 "Static type of the CelType runtime value denoted by a predeclared identifier."
@@ -228,7 +238,7 @@ const STD_DECLS = _std_decls()
 
 "Resolve type params through the substitution map."
 function subst(t::SType, subs::Dict{String,SType})
-    t.kind == :type_param && return haskey(subs, t.name) ? subst(subs[t.name], subs) : t
+    t.kind == TypeKind.TypeParam && return haskey(subs, t.name) ? subst(subs[t.name], subs) : t
     isempty(t.params) && return t
     return SType(t.kind, [subst(p, subs) for p in t.params], t.name)
 end
@@ -240,19 +250,19 @@ on success. `dyn` unifies with everything.
 function unify!(subs::Dict{String,SType}, formal::SType, actual::SType)
     formal = subst(formal, subs)
     actual = subst(actual, subs)
-    (formal.kind == :dyn || actual.kind == :dyn) && return true
-    actual.kind == :error && return true
-    if formal.kind == :type_param
+    (formal.kind == TypeKind.Dyn || actual.kind == TypeKind.Dyn) && return true
+    actual.kind == TypeKind.Error && return true
+    if formal.kind == TypeKind.TypeParam
         formal.name == actual.name || (subs[formal.name] = actual)
         return true
     end
-    if actual.kind == :type_param
+    if actual.kind == TypeKind.TypeParam
         subs[actual.name] = formal
         return true
     end
     formal.kind == actual.kind || return false
-    formal.kind in (:message,) && return formal.name == actual.name
-    if formal.kind == :type
+    formal.kind in (TypeKind.Message,) && return formal.name == actual.name
+    if formal.kind == TypeKind.Type
         # type(T1) and type(T2) always unify: values of different types may
         # be compared (`type(1) == type('a')` is well-typed and false)
         foreach(p -> unify!(subs, p...), zip(formal.params, actual.params))
@@ -274,18 +284,18 @@ function join_types(subs::Dict{String,SType}, a::SType, b::SType)
     a = subst(a, subs)
     b = subst(b, subs)
     a == b && return a
-    a.kind == :error && return b
-    b.kind == :error && return a
-    if a.kind == :type_param
+    a.kind == TypeKind.Error && return b
+    b.kind == TypeKind.Error && return a
+    if a.kind == TypeKind.TypeParam
         subs[a.name] = b
         return b
     end
-    if b.kind == :type_param
+    if b.kind == TypeKind.TypeParam
         subs[b.name] = a
         return a
     end
-    a.kind == :null && return b   # null joins with wrapper-ish types; keep permissive
-    b.kind == :null && return a
+    a.kind == TypeKind.Null && return b   # null joins with wrapper-ish types; keep permissive
+    b.kind == TypeKind.Null && return a
     if a.kind == b.kind && length(a.params) == length(b.params) && a.name == b.name
         return SType(a.kind, [join_types(subs, x, y) for (x, y) in zip(a.params, b.params)], a.name)
     end
@@ -311,7 +321,7 @@ freshvar!(st::CheckState) = param_t("_var$(st.fresh += 1)")
 "Replace remaining unbound type variables with dyn (for final reporting)."
 function finalize_type(t::SType, subs::Dict{String,SType})
     t = subst(t, subs)
-    t.kind == :type_param && return DYN_T
+    t.kind == TypeKind.TypeParam && return DYN_T
     isempty(t.params) && return t
     return SType(t.kind, [finalize_type(p, subs) for p in t.params], t.name)
 end
@@ -382,17 +392,17 @@ function infer(st::CheckState, e::IdentExpr)
 end
 
 function select_result_type(st::CheckState, opt::SType, field::String)
-    opt.kind == :dyn && return DYN_T
-    opt.kind == :type_param && return DYN_T
-    opt.kind == :map && return opt.params[2]
-    opt.kind == :message && return adapter_field_type(opt.name, field)
+    opt.kind == TypeKind.Dyn && return DYN_T
+    opt.kind == TypeKind.TypeParam && return DYN_T
+    opt.kind == TypeKind.Map && return opt.params[2]
+    opt.kind == TypeKind.Message && return adapter_field_type(opt.name, field)
     throw(CheckError("type '$(type_name(opt))' does not support field selection"))
 end
 
 function infer(st::CheckState, e::SelectExpr)
     if e.test_only
         opt = infer(st, e.operand)
-        if !(opt.kind in (:dyn, :map, :message, :type_param))
+        if !(opt.kind in (TypeKind.Dyn, TypeKind.Map, TypeKind.Message, TypeKind.TypeParam))
             throw(CheckError("has() does not support type '$(type_name(opt))'"))
         end
         return settype!(st, e, BOOL_T)
@@ -533,7 +543,7 @@ end
 
 "Rename type params to call-site-unique names."
 function instantiate(t::SType, inst::Dict{String,SType}, fresh::Int)
-    if t.kind == :type_param
+    if t.kind == TypeKind.TypeParam
         return get!(inst, t.name) do
             param_t("$(t.name)#$(fresh)")
         end
@@ -545,11 +555,11 @@ end
 function infer(st::CheckState, e::ComprehensionExpr)
     ranget = infer(st, e.iter_range)
     two = !isempty(e.iter_var2)
-    (v1t, v2t) = if ranget.kind == :list
+    (v1t, v2t) = if ranget.kind == TypeKind.List
         two ? (INT_T, ranget.params[1]) : (ranget.params[1], NULL_T)
-    elseif ranget.kind == :map
+    elseif ranget.kind == TypeKind.Map
         two ? (ranget.params[1], ranget.params[2]) : (ranget.params[1], NULL_T)
-    elseif ranget.kind in (:dyn, :type_param)
+    elseif ranget.kind in (TypeKind.Dyn, TypeKind.TypeParam)
         (DYN_T, DYN_T)
     else
         throw(CheckError("expression of type '$(type_name(ranget))' cannot be the range of a comprehension"))

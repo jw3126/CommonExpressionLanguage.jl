@@ -1,7 +1,20 @@
 # Lexer for the CEL grammar (https://github.com/google/cel-spec/blob/master/doc/langdef.md#syntax).
 
+@enumx TokenKind begin
+    # literals and names
+    INT; UINT; FLOAT; STRING; BYTES; IDENT; QIDENT; BOOL; NULL; RESERVED
+    # keyword operator
+    IN
+    # operators and punctuation
+    OR; AND; EQ; NE; LE; GE; LT; GT
+    PLUS; MINUS; STAR; SLASH; PERCENT; BANG
+    LPAREN; RPAREN; LBRACKET; RBRACKET; LBRACE; RBRACE
+    DOT; COMMA; COLON; QUESTION
+    EOF
+end
+
 struct Token
-    kind::Symbol   # :INT,:UINT,:FLOAT,:STRING,:BYTES,:IDENT,:BOOL,:NULL,:RESERVED,:EOF or op symbol e.g. Symbol("&&")
+    kind::TokenKind.T
     value::Any     # decoded literal value / identifier name / operator text
     pos::Int       # 1-based byte offset into the source
 end
@@ -54,7 +67,7 @@ function tokenize(src::String)
     while true
         skip_ws_comments!(lx)
         if atend(lx)
-            push!(tokens, Token(:EOF, nothing, lx.i))
+            push!(tokens, Token(TokenKind.EOF, nothing, lx.i))
             return tokens
         end
         push!(tokens, next_token!(lx))
@@ -105,19 +118,19 @@ function next_token!(lx::Lexer)
         name = unsafe_substr(lx.src, start, lx.i - start)
         isempty(name) && throw(LexError("empty quoted identifier", pos))
         lx.i += 1
-        return Token(:QIDENT, name, pos)
+        return Token(TokenKind.QIDENT, name, pos)
     end
 
     # Operators and punctuation, longest match first.
     two = lx.i + 1 <= lx.n ? unsafe_substr(lx.src, lx.i, 2) : ""
-    if two in ("||", "&&", "==", "!=", "<=", ">=")
+    if haskey(TWO_CHAR_OPS, two)
         lx.i += 2
-        return Token(Symbol(two), two, pos)
+        return Token(TWO_CHAR_OPS[two], two, pos)
     end
     c = Char(b)
-    if c in ('(', ')', '[', ']', '{', '}', '.', ',', ':', '?', '+', '-', '*', '/', '%', '!', '<', '>')
+    if haskey(ONE_CHAR_OPS, c)
         lx.i += 1
-        return Token(Symbol(c), string(c), pos)
+        return Token(ONE_CHAR_OPS[c], string(c), pos)
     end
     throw(LexError("unexpected character $(repr(Char(b)))", pos))
 end
@@ -131,12 +144,12 @@ function lex_ident!(lx::Lexer)
         lx.i += 1
     end
     name = unsafe_substr(lx.src, pos, lx.i - pos)
-    name == "true" && return Token(:BOOL, true, pos)
-    name == "false" && return Token(:BOOL, false, pos)
-    name == "null" && return Token(:NULL, nothing, pos)
-    name == "in" && return Token(:IN, "in", pos)
-    name in RESERVED_WORDS && return Token(:RESERVED, name, pos)
-    return Token(:IDENT, name, pos)
+    name == "true" && return Token(TokenKind.BOOL, true, pos)
+    name == "false" && return Token(TokenKind.BOOL, false, pos)
+    name == "null" && return Token(TokenKind.NULL, nothing, pos)
+    name == "in" && return Token(TokenKind.IN, "in", pos)
+    name in RESERVED_WORDS && return Token(TokenKind.RESERVED, name, pos)
+    return Token(TokenKind.IDENT, name, pos)
 end
 
 function lex_number!(lx::Lexer)
@@ -153,10 +166,10 @@ function lex_number!(lx::Lexer)
         if peekb(lx) == UInt8('u') || peekb(lx) == UInt8('U')
             lx.i += 1
             mag <= typemax(UInt64) || throw(LexError("uint literal out of range", pos))
-            return Token(:UINT, UInt64(mag), pos)
+            return Token(TokenKind.UINT, UInt64(mag), pos)
         end
         # Magnitude token; sign folding (and MinInt) handled in the parser.
-        return Token(:INT, mag, pos)
+        return Token(TokenKind.INT, mag, pos)
     end
 
     isfloat = false
@@ -189,15 +202,15 @@ function lex_number!(lx::Lexer)
         # Julia rejects literals that underflow to zero (e.g. 1e-324);
         # round via BigFloat like other CEL implementations do.
         v === nothing && (v = Float64(parse(BigFloat, text)))
-        return Token(:FLOAT, v, pos)
+        return Token(TokenKind.FLOAT, v, pos)
     end
     if peekb(lx) == UInt8('u') || peekb(lx) == UInt8('U')
         lx.i += 1
         mag = parse(UInt128, text)
         mag <= typemax(UInt64) || throw(LexError("uint literal out of range", pos))
-        return Token(:UINT, UInt64(mag), pos)
+        return Token(TokenKind.UINT, UInt64(mag), pos)
     end
-    return Token(:INT, parse(UInt128, text), pos)  # magnitude; parser folds sign
+    return Token(TokenKind.INT, parse(UInt128, text), pos)  # magnitude; parser folds sign
 end
 
 function lex_string!(lx::Lexer, pos::Int; raw::Bool, isbytes::Bool)
@@ -229,11 +242,11 @@ function lex_string!(lx::Lexer, pos::Int; raw::Bool, isbytes::Bool)
         end
     end
     if isbytes
-        return Token(:BYTES, CelBytes(out), pos)
+        return Token(TokenKind.BYTES, CelBytes(out), pos)
     else
         s = String(out)
         isvalid(s) || throw(LexError("invalid UTF-8 in string literal", pos))
-        return Token(:STRING, s, pos)
+        return Token(TokenKind.STRING, s, pos)
     end
 end
 
@@ -306,3 +319,17 @@ function emit_codepoint!(out::Vector{UInt8}, v::Int, spos::Int)
         throw(LexError("invalid code point in escape", spos))
     append!(out, codeunits(string(Char(v))))
 end
+
+const TWO_CHAR_OPS = Dict(
+    "||" => TokenKind.OR, "&&" => TokenKind.AND, "==" => TokenKind.EQ,
+    "!=" => TokenKind.NE, "<=" => TokenKind.LE, ">=" => TokenKind.GE,
+)
+const ONE_CHAR_OPS = Dict(
+    '(' => TokenKind.LPAREN, ')' => TokenKind.RPAREN,
+    '[' => TokenKind.LBRACKET, ']' => TokenKind.RBRACKET,
+    '{' => TokenKind.LBRACE, '}' => TokenKind.RBRACE,
+    '.' => TokenKind.DOT, ',' => TokenKind.COMMA, ':' => TokenKind.COLON,
+    '?' => TokenKind.QUESTION, '+' => TokenKind.PLUS, '-' => TokenKind.MINUS,
+    '*' => TokenKind.STAR, '/' => TokenKind.SLASH, '%' => TokenKind.PERCENT,
+    '!' => TokenKind.BANG, '<' => TokenKind.LT, '>' => TokenKind.GT,
+)

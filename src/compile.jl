@@ -45,10 +45,12 @@ struct Program
     impl::Function
     source::String
 end
-(p::Program)(vars::AbstractDict=Dict{String,Any}()) = p.impl(Activation(to_cel_vars(vars)))
+(p::Program)(vars::Union{AbstractDict,NamedTuple}=Dict{String,Any}()) =
+    p.impl(Activation(to_cel_vars(vars)))
 (p::Program)(a::Activation) = p.impl(a)
 
 to_cel_vars(vars::AbstractDict) = Dict{String,Any}(String(k) => to_cel(v) for (k, v) in vars)
+to_cel_vars(vars::NamedTuple) = Dict{String,Any}(String(k) => to_cel(v) for (k, v) in pairs(vars))
 
 "Convert a Julia value to its CEL runtime representation (shallow scalars, recursive containers)."
 to_cel(x::Union{Int64,UInt64,Float64,Bool,String,Nothing,CelBytes,CelTimestamp,CelDuration,CelType}) = x
@@ -78,7 +80,7 @@ end
 
 One-shot parse + compile + run.
 """
-evaluate(src; vars::AbstractDict=Dict{String,Any}(), env::Env=Env()) =
+evaluate(src; vars::Union{AbstractDict,NamedTuple}=Dict{String,Any}(), env::Env=Env()) =
     compile(src; env)(vars)
 
 # ------------------------------------------------------------------

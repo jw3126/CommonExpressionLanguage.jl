@@ -465,14 +465,18 @@ function iter_items(range, two::Bool)
 end
 
 """
-Resolve an ident-rooted select path against a bindings dict, mirroring the
-closure backend's `compile_resolution`: `cands` are `(qualified_name, k)`
-pairs, remaining `parts[k+1:end]` are field selections.
+Resolve an ident-rooted select path against runtime bindings, mirroring the
+closure backend's `compile_resolution`: `cands` are
+`(qualified_name, qualified_symbol, k)` triples, remaining `parts[k+1:end]`
+are field selections. Bindings may be an `AbstractDict` keyed by strings or
+a `NamedTuple` — for a NamedTuple, `haskey` on the constant candidate tuple
+constant-folds, so variable access compiles down to a direct field load.
 """
-function _resolve_path(vars::AbstractDict, cands, parts, std_fallback)
-    for (qname, k) in cands
-        haskey(vars, qname) || continue
-        v = vars[qname]
+function _resolve_path(vars::Union{AbstractDict,NamedTuple}, cands, parts, std_fallback)
+    for (qname, qsym, k) in cands
+        key = vars isa NamedTuple ? qsym : qname
+        haskey(vars, key) || continue
+        v = vars[key]
         for i in k+1:length(parts)
             v = cel_select(v, parts[i])
             v isa CelError && return v
