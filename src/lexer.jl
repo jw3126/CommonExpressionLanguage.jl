@@ -111,7 +111,7 @@ function next_token!(lx::Lexer)
         # Backtick-quoted identifier (field selection escape syntax).
         lx.i += 1
         start = lx.i
-        while !atend(lx) && peekb(lx) != UInt8('`') && peekb(lx) != UInt8('\n')
+        while !atend(lx) && peekb(lx) != UInt8('`') && peekb(lx) != UInt8('\n') && peekb(lx) != UInt8('\r')
             lx.i += 1
         end
         peekb(lx) == UInt8('`') || throw(LexError("unterminated quoted identifier", pos))
@@ -241,7 +241,7 @@ function lex_string!(lx::Lexer, pos::Int; raw::Bool, isbytes::Bool)
             end
         elseif b == UInt8('\\') && !raw
             lex_escape!(lx, out, isbytes, pos)
-        elseif b == UInt8('\n') && !triple
+        elseif (b == UInt8('\n') || b == UInt8('\r')) && !triple
             throw(LexError("newline in single-quoted string", pos))
         else
             push!(out, b)

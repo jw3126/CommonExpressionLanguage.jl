@@ -110,6 +110,23 @@ end
         "a.f" => x -> "GLOBAL", "f" => (t, x) -> "RECEIVER"))
     @test evaluate("a.f(1)", env=env) == "GLOBAL"
     @test evaluate("a.f(1)", vars=Dict("a" => 9), env=env) == "RECEIVER"
+    # typemin % -1 is an overflow error like cel-go moduloInt64Checked (cel_div already errors)
+    @test iserr(evaluate("-9223372036854775808 % -1"), :overflow)
+    # PCRE-only constructs RE2 has no spelling for: named backrefs, subroutine
+    # calls, conditionals, possessive quantifiers
+    @test iserr(evaluate("\"aa\".matches(\"(?P<x>a)(?P=x)\")"), :invalid_argument)
+    @test iserr(evaluate("\"aa\".matches(\"(?P<x>a)(?P>x)\")"), :invalid_argument)
+    @test iserr(evaluate("\"aaa\".matches(\"a*+\")"), :invalid_argument)
+    @test iserr(evaluate("\"aaa\".matches(\"a{1,2}+\")"), :invalid_argument)
+    @test iserr(evaluate("\"ab\".matches(\"(a)(?(1)b)\")"), :invalid_argument)
+    @test evaluate("\"ab\".matches(\"(?P<x>a)b\")") === true    # named groups are valid RE2
+    @test evaluate("\"aa\".matches(\"a+?a\")") === true         # lazy quantifiers are valid RE2
+    @test evaluate("\"a{2}+\".matches(\"a\\\\{2}+\")") === true # escaped brace: }+ repeats a literal
+    # raw carriage return is excluded from single-line strings like raw newline
+    @test_throws CEL.LexError parse_cel("\"a\rb\"")
+    # timezone offsets are range-checked (hours <= 23, minutes <= 59)
+    @test iserr(evaluate("timestamp(\"2001-01-01T00:00:00+99:99\")"), :invalid_argument)
+    @test iserr(evaluate("timestamp(\"2009-02-13T23:31:30Z\").getHours(\"+05:99\")"), :invalid_argument)
 end
 
 @testset "types" begin

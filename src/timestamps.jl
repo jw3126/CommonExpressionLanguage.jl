@@ -86,8 +86,9 @@ function cel_to_timestamp(s::String)
     offset = 0
     tz = m.captures[8]
     if !(tz in ("Z", "z"))
-        sign = tz[1] == '-' ? -1 : 1
-        offset = sign * (parse(Int, tz[2:3]) * 3600 + parse(Int, tz[5:6]) * 60)
+        off = tz_offset(String(tz), Int64(0))
+        off isa CelError && return CelError(:invalid_argument, "invalid timestamp: $(repr(s))")
+        offset = Int(off)
     end
     epoch = round(Int64, Dates.datetime2unix(Dates.DateTime(y, mo, d, h, mi, sec))) - offset
     (TS_MIN_SECONDS <= epoch <= TS_MAX_SECONDS) || return ERR_TS_RANGE
@@ -178,8 +179,12 @@ function tz_offset(tz::String, epoch_s::Int64)
     (tz == "" || tz == "UTC" || tz == "Z") && return Int64(0)
     m = match(r"^([+-])(\d{1,2}):(\d{2})$", tz)
     if m !== nothing
+        hh = parse(Int, m.captures[2])
+        mm = parse(Int, m.captures[3])
+        (hh <= 23 && mm <= 59) ||
+            return CelError(:invalid_argument, "invalid timezone offset: $(repr(tz))")
         sign = m.captures[1] == "-" ? -1 : 1
-        return Int64(sign * (parse(Int, m.captures[2]) * 3600 + parse(Int, m.captures[3]) * 60))
+        return Int64(sign * (hh * 3600 + mm * 60))
     end
     if hasmethod(iana_tz_offset, Tuple{String,Int64})
         off = iana_tz_offset(tz, epoch_s)

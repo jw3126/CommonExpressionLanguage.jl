@@ -73,7 +73,7 @@ cel_div(x, y) = no_overload("_/_", x, y)
 
 function cel_mod(x::Int64, y::Int64)
     y == 0 && return ERR_MOD_ZERO
-    (x == typemin(Int64) && y == -1) && return Int64(0)
+    (x == typemin(Int64) && y == -1) && return ERR_OVERFLOW  # cel-go moduloInt64Checked
     return rem(x, y)  # sign follows dividend per spec
 end
 cel_mod(x::UInt64, y::UInt64) = y == 0 ? ERR_MOD_ZERO : rem(x, y)
@@ -319,13 +319,16 @@ cel_ends_with(x, y) = no_overload("endsWith", x, y)
 """
 CEL specifies RE2 regex syntax; Julia uses PCRE2, a near-superset. Reject the
 PCRE-only constructs RE2 does not support — lookarounds `(?=` `(?!` `(?<=`
-`(?<!`, atomic groups `(?>`, backreferences `\\1`..`\\9`/`\\g`/`\\k` — so they
-error like conformant CEL instead of silently matching.
+`(?<!`, atomic groups `(?>`, backreferences `\\1`..`\\9`/`\\g`/`\\k`/`(?P=name)`,
+conditionals `(?(`, recursion/subroutine calls `(?R)` `(?1)` `(?&name)` `(?P>name)`,
+and possessive quantifiers `*+` `++` `?+` `{n,m}+` — so they error like
+conformant CEL instead of silently matching.
 """
 function _re2_incompatible(pattern::String)
     i = firstindex(pattern)
     n = lastindex(pattern)
     inclass = false
+    brace = 0  # index of the last unescaped '{' outside a class
     while i <= n
         c = pattern[i]
         if c == '\\'
@@ -343,11 +346,23 @@ function _re2_incompatible(pattern::String)
             if j <= n
                 d = pattern[j]
                 (d == '=' || d == '!' || d == '>') && return true
+                (d == '(' || d == 'R' || d == '&' || d in '0':'9') && return true
                 if d == '<'
                     j2 = nextind(pattern, j)
                     j2 <= n && (pattern[j2] == '=' || pattern[j2] == '!') && return true
                 end
+                if d == 'P'  # (?P<name>...) is a named group RE2 accepts; (?P=name)/(?P>name) are not
+                    j2 = nextind(pattern, j)
+                    j2 <= n && (pattern[j2] == '=' || pattern[j2] == '>') && return true
+                end
             end
+        elseif !inclass && (c == '*' || c == '+' || c == '?') && i < n && pattern[nextind(pattern, i)] == '+'
+            return true  # possessive quantifier (RE2 errors; PCRE silently matches)
+        elseif !inclass && c == '{'
+            brace = i
+        elseif !inclass && c == '}' && brace != 0 && i < n && pattern[nextind(pattern, i)] == '+'
+            span = SubString(pattern, nextind(pattern, brace), prevind(pattern, i))
+            occursin(r"^\d+(,\d*)?$", span) && return true  # {n,m}+ possessive
         end
         i = nextind(pattern, i)
     end
