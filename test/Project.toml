@@ -3,3 +3,6 @@ CommonExpressionLanguage = "bceeabe9-ad90-4405-8225-25f0a3aaf9b0"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
+
+[compat]
+TimeZones = "1.22.2"
